@@ -1,0 +1,4 @@
+defaults:
+  - scene_filter: mynavtrain
+
+data_split: trainval
