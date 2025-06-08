@@ -20,6 +20,8 @@ import os
 import json
 import random
 
+from navsim.agents.diffusiondrive.eval_traj_vlm import AnchorTrajectoryScorer
+
 # === JSONL 파일에서 action_probs 읽어오는 함수 ===
 def load_jsonl_and_extract_action_probs(jsonl_path: str) -> List[Dict[str, Any]]:
     """
@@ -162,6 +164,14 @@ class V2TransfuserModel(nn.Module):
                 ap = entry["action_probs"]
                 if tok is not None:
                     self.token_to_action_probs[tok] = ap
+
+        # VLM을 이용한 궤적 평가 class 호출출
+        self.anchor_scorer = AnchorTrajectoryScorer(
+            config=config,
+            model_name="OpenGVLab/InternVL3-8B",
+            hd_map_dir="/data/goodhsm2000/repos/InternVL/HD_Map",
+            result_dir="/data/goodhsm2000/result",
+        )
 
     def _visualize(self, bev_sem_map: torch.Tensor, all_anchor_trajs: torch.Tensor):
         """
@@ -911,12 +921,47 @@ class TrajectoryHead(nn.Module):
                 timestep=k,
                 sample=img
             ).prev_sample
-        mode_idx = poses_cls.argmax(dim=-1)
-        warnings.warn(f"[DEBUG] chosen_anchor_idx = {mode_idx.tolist()}")
-        mode_idx = mode_idx[...,None,None,None].repeat(1,1,self._num_poses,3)
+        
+        # 기존 코드
+        # mode_idx = poses_cls.argmax(dim=-1)
+        # warnings.warn(f"[DEBUG] chosen_anchor_idx = {mode_idx.tolist()}")
+        # mode_idx = mode_idx[...,None,None,None].repeat(1,1,self._num_poses,3)
 
-        best_reg = torch.gather(poses_reg, 1, mode_idx).squeeze(1)
-        return {"trajectory": best_reg, "all_anchor_trajs": poses_reg_list[-1],
-                "all_anchor_scores": poses_cls_list[-1]}
+        # 1) 상위 K=5개 인덱스 추출
+        topk_vals, topk_idxs = torch.topk(poses_cls, k=5, dim=1)  # both [bs,5]
+        warnings.warn(f"topk_idxs = {topk_idxs}")
 
+        # 2) 배치별로 AnchorTrajectoryScorer에 token과 앵커 배열 전달
+        final_trajs = []
+        for b in range(bs):
+            # a) 토큰 문자열
+            cur_token = token
+
+            # b) torch → numpy 변환: (5, T, D)
+            selected_np = poses_reg[b, topk_idxs[b]].detach().cpu().numpy()
+
+            # c) VLM-based 정밀 스코어링 & 최종 궤적 선택
+            best_np = self.anchor_scorer.select_best_anchor(
+                token    = cur_token,
+                anchors  = selected_np
+            )  # returns np.ndarray shape (1, T, D)
+
+            # d) torch.Tensor로 변환
+            best_t = torch.from_numpy(best_np).to(device).squeeze(0)  # (T, D)
+            final_trajs.append(best_t)
+
+        # 3) 배치 차원 복원 → [bs, T, D]
+        best_reg = torch.stack(final_trajs, dim=0)
+
+        # 최종 반환
+        return {
+            "trajectory":        best_reg,         # VLM으로 재선택된 궤적
+            "all_anchor_trajs":  poses_reg,
+            "all_anchor_scores": poses_cls,
+        }
+
+
+        # best_reg = torch.gather(poses_reg, 1, mode_idx).squeeze(1)
+        # return {"trajectory": best_reg, "all_anchor_trajs": poses_reg_list[-1],
+        #         "all_anchor_scores": poses_cls_list[-1]}
 

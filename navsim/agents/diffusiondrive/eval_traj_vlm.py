@@ -379,7 +379,7 @@ if __name__ == "__main__":
     # 3) Scorer 생성 및 실행
     scorer = AnchorTrajectoryScorer(
         config=TransfuserConfig,
-        model_name = "OpenGVLab/InternVL2_5-4B",
+        model_name = "OpenGVLab/InternVL3-9B",
         hd_map_dir = "/data/goodhsm2000/repos/InternVL/HD_Map",
         result_dir = "/data/goodhsm2000/result",
     )
