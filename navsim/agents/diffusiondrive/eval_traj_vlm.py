@@ -24,10 +24,11 @@ from torchvision.transforms.functional import InterpolationMode
 from PIL import Image, ImageDraw, ImageFont, ImageOps
 from transformers import AutoModel, AutoTokenizer
 from navsim.agents.diffusiondrive.transfuser_config import TransfuserConfig
+import ray
 
-print("CUDA available:", torch.cuda.is_available())
-print("CUDA runtime version:", torch.version.cuda)
-print("GPU name:", torch.cuda.get_device_name(0))
+# print("CUDA available:", torch.cuda.is_available())
+# print("CUDA runtime version:", torch.version.cuda)
+# print("GPU name:", torch.cuda.get_device_name(0))
 
 def pad_to_square(img: Image.Image, fill=(0,0,0)):
     w, h = img.size
@@ -39,6 +40,7 @@ def pad_to_square(img: Image.Image, fill=(0,0,0)):
 # -------------------------------------------------------------------
 # 1) AnchorTrajectoryScorer 클래스 정의
 # -------------------------------------------------------------------
+@ray.remote(num_gpus=1)
 class AnchorTrajectoryScorer:
     def __init__(
         self,
@@ -205,8 +207,6 @@ class AnchorTrajectoryScorer:
         Centerline alignment score: <0.00–1.00 – reason>
         Final score: <X.XX>
         """
-
-
 
         full_prompt   = system_prompt + "\n" + user_prompt
 
