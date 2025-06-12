@@ -19,7 +19,7 @@ scorer:
     # weighted metric weights
     progress_weight: 5.0
     ttc_weight: 5.0
-    comfortable_weight: 15.0
+    comfortable_weight: 20.0
     driving_direction_weight: 0.0
 
     # thresholds

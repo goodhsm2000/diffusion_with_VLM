@@ -91,9 +91,9 @@ class TransfuserConfig:
     use_ema: bool = False
     # BEV mapping
     bev_semantic_classes = {
-        1: ("polygon", [SemanticMapLayer.LANE, SemanticMapLayer.INTERSECTION]),  # road
-        2: ("polygon", [SemanticMapLayer.WALKWAYS]),  # walkways
-        3: ("linestring", [SemanticMapLayer.LANE, SemanticMapLayer.LANE_CONNECTOR]),  # centerline
+        1: ("polygon", [SemanticMapLayer.LANE, SemanticMapLayer.INTERSECTION]), 
+        2: ("polygon", [SemanticMapLayer.WALKWAYS]),  
+        3: ("linestring", [SemanticMapLayer.LANE, SemanticMapLayer.LANE_CONNECTOR]),
         4: (
             "box",
             [
@@ -102,9 +102,9 @@ class TransfuserConfig:
                 TrackedObjectType.TRAFFIC_CONE,
                 TrackedObjectType.GENERIC_OBJECT,
             ],
-        ),  # static_objects
-        5: ("box", [TrackedObjectType.VEHICLE]),  # vehicles
-        6: ("box", [TrackedObjectType.PEDESTRIAN]),  # pedestrians
+        ),  
+        5: ("box", [TrackedObjectType.VEHICLE]),  
+        6: ("box", [TrackedObjectType.PEDESTRIAN]),  
     }
 
     bev_pixel_width: int = lidar_resolution_width
