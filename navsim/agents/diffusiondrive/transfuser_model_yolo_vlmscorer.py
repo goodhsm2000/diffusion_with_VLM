@@ -19,7 +19,8 @@ import cv2
 import os
 import json
 import random
-from ultralytics import YOLO
+import ray
+
 from navsim.agents.diffusiondrive.eval_traj_vlm import AnchorTrajectoryScorer
 
 # === JSONL 파일에서 action_probs 읽어오는 함수 ===
@@ -154,8 +155,7 @@ class V2TransfuserModel(nn.Module):
         self.save_vis_dir = "/data/goodhsm2000/repos/DiffusionDrive/result"
         os.makedirs(self.save_vis_dir, exist_ok=True)
         self.vis_count = 0
-        
-        # jsonl 파일에서 token에 맞는 anchor probs 추출
+
         jsonl_path = "/data/goodhsm2000/repos/InternVL/anchor_probs.jsonl"
         self.token_to_action_probs: Dict[str, Dict[str, float]] = {}
         if jsonl_path is not None:
@@ -166,13 +166,6 @@ class V2TransfuserModel(nn.Module):
                 if tok is not None:
                     self.token_to_action_probs[tok] = ap
 
-        # VLM을 이용한 궤적 평가 class 호출출
-        self.anchor_scorer = AnchorTrajectoryScorer(
-            config=config,
-            model_name="OpenGVLab/InternVL2_5-4B",
-            hd_map_dir="/data/goodhsm2000/repos/InternVL/HD_Map",
-            result_dir="/data/goodhsm2000/result",
-        )
 
     def _visualize(self, bev_sem_map: torch.Tensor, all_anchor_trajs: torch.Tensor):
         """
@@ -600,8 +593,14 @@ class TrajectoryHead(nn.Module):
             prediction_type="sample",
         )
 
-        # Load a model
-        self.model = YOLO("best.pt")  # load an official model
+        # VLM을 이용한 궤적 평가 class 호출
+        self.anchor_scorer = AnchorTrajectoryScorer.remote(
+            config=config,
+            model_name="OpenGVLab/InternVL3-8B",
+            hd_map_dir="/data/goodhsm2000/repos/InternVL/HD_Map",
+            result_dir="/data/goodhsm2000/result",
+        )
+
 
         plan_anchor = np.load(plan_anchor_path)
         # plan_anchor = np.repeat(plan_anchor, 256, axis = 0)
@@ -802,23 +801,22 @@ class TrajectoryHead(nn.Module):
         #     anchor_idx[b] = torch.tensor(picks, dtype=torch.long, device=device)
 
              # ------------------------ 1-2) 배치마다 N개의 앵커를 token_to_action_probs에 따라 샘플링 ------------------------
-        N = 10
+        N = 20
         anchor_idx = torch.zeros((bs, N), dtype=torch.long, device=device)
 
         for b in range(bs):
             # 1-2-a) 배치 b의 token에 맞는 action_probs 가져오기
-            # Predict with the model
-            image_path = f"/local_datasets/VLM_input/{token}.jpg"
-            results = self.model(image_path) 
-            if results is None:
-                raise KeyError(f"Token {token} not found in token_to_action_probs.")
-            probs = results  # 예: YOLO 각 Class의 결과 
+            cur_token = token
+            entry = token_to_action_probs.get(cur_token)
+            if entry is None:
+                raise KeyError(f"Token {cur_token} not found in token_to_action_probs.")
+            probs = entry  # 예: {"forward":0.5, "veer_left":0.2, ...}
 
             # 1-2-b) 각 action별로 샘플 개수 계산
-            n_forward = int(probs[0] * N)
-            n_left    = int(probs[1] * N)
-            n_right   = int(probs[2] * N)
-            n_stop    = int(probs[3] * N)
+            n_forward = int(probs.get("forward", 0.0) * N)
+            n_left    = int(probs.get("veer_left", 0.0) * N)
+            n_right   = int(probs.get("veer_right", 0.0) * N)
+            n_stop    = int(probs.get("stop", 0.0) * N)
 
             total_assigned = n_forward + n_left + n_right + n_stop
             if total_assigned != N:
@@ -925,11 +923,47 @@ class TrajectoryHead(nn.Module):
                 timestep=k,
                 sample=img
             ).prev_sample
-            
-        mode_idx = poses_cls.argmax(dim=-1)
-        warnings.warn(f"[DEBUG] chosen_anchor_idx = {mode_idx.tolist()}")
-        mode_idx = mode_idx[...,None,None,None].repeat(1,1,self._num_poses,3)
+        
+        # 기존 코드
+        # mode_idx = poses_cls.argmax(dim=-1)
+        # warnings.warn(f"[DEBUG] chosen_anchor_idx = {mode_idx.tolist()}")
+        # mode_idx = mode_idx[...,None,None,None].repeat(1,1,self._num_poses,3)
 
-        best_reg = torch.gather(poses_reg, 1, mode_idx).squeeze(1)
-        return {"trajectory": best_reg, "all_anchor_trajs": poses_reg_list[-1],
-                "all_anchor_scores": poses_cls_list[-1]}
+        # 1) 상위 K=5개 인덱스 추출
+        topk_vals, topk_idxs = torch.topk(poses_cls, k=5, dim=1)  # both [bs,5]
+        warnings.warn(f"topk_idxs = {topk_idxs}")
+
+        # 2) 배치별로 AnchorTrajectoryScorer에 token과 앵커 배열 전달
+        final_trajs = []
+        for b in range(bs):
+            # a) 토큰 문자열
+            cur_token = token
+
+            # b) torch → numpy 변환: (5, T, D)
+            selected_np = poses_reg[b, topk_idxs[b]].detach().cpu().numpy()
+
+            # c) VLM-based 정밀 스코어링 & 최종 궤적 선택
+            best_np = self.anchor_scorer.select_best_anchor.remote(
+                token    = cur_token,
+                anchors  = selected_np
+            )  # returns np.ndarray shape (1, T, D)
+            best_np = ray.get(best_np) 
+            # d) torch.Tensor로 변환
+            best_t = torch.from_numpy(best_np).to(device).squeeze(0)  # (T, D)
+            final_trajs.append(best_t)
+
+        # 3) 배치 차원 복원 → [bs, T, D]
+        best_reg = torch.stack(final_trajs, dim=0)
+
+        # 최종 반환
+        return {
+            "trajectory":        best_reg,         # VLM으로 재선택된 궤적
+            "all_anchor_trajs":  poses_reg,
+            "all_anchor_scores": poses_cls,
+        }
+
+
+        # best_reg = torch.gather(poses_reg, 1, mode_idx).squeeze(1)
+        # return {"trajectory": best_reg, "all_anchor_trajs": poses_reg_list[-1],
+        #         "all_anchor_scores": poses_cls_list[-1]}
+
