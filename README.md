@@ -1,7 +1,7 @@
 ## 📁 Final Code Locations
 
 The final implementation can be found under the following directory:
-diffusion_with_VLM/navsim/agents/diffusiondrive/
+**diffusion_with_VLM/navsim/agents/diffusiondrive/**
 
 
 | Method Combination                                                                 | File Name                                                                                                                      |
